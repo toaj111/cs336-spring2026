@@ -106,6 +106,7 @@ def merge_pair_and_update_counts(pretoken_counts: dict[tuple[bytes, ...], int], 
 
     return new_token
 
+# TODO: 优化
 def select_best_pair(pair_counts: dict[tuple[bytes, bytes], int]) -> tuple[bytes, bytes]:
     best_pair = max(pair_counts.items(), key=lambda x : (x[1], x[0]))
     return best_pair[0]
