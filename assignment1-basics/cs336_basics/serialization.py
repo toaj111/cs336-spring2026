@@ -1,5 +1,5 @@
 import json
-
+import numpy as np
 
 def save_vocab(vocab: dict[int, bytes], file_path: str):
     # 经过合并后可能会出现不合法的utf-8序列，因此需要用其他方式编码解码
@@ -40,4 +40,12 @@ def load_merges(file_path: str) -> list[tuple[bytes, bytes]]:
                for token1, token2 in serializable_merges]
 
     return merges
+
+
+# TODO: 完成tokenid的序列化和逆序列化
+def save_token_IDs(token_ids: list[int]):
+    pass
+
+def load_token_IDs(file_path: str) -> list[np.uint16]:
+    pass
     

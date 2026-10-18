@@ -22,7 +22,6 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
     )
 
     while len(vocab) < vocab_size:
-        # TODO: 反向索引优化
         best_pair = select_best_pair(pair_counts)
         merges.append(best_pair)
         new_token = merge_pair_and_update_counts(pretoken_counts, pair_counts, best_pair)
