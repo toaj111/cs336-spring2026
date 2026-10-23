@@ -42,7 +42,7 @@ class Tokenizer:
 
         return token_ids
 
-
+    # TODO: 完成test_encode_iterable_memory_usage测试
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         # 使用AI完成
         buffer = ""
