@@ -4,6 +4,8 @@ import torch
 import math
 import torch.nn as nn
 
+
+# TODO: 应用lr strategy
 class AdamW(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, weight_decay=0.01, betas=(0.9, 0.999), eps=1e-8):
         if lr < 0 or weight_decay < 0 or eps < 0 or betas[0] < 0 or betas[1] < 0:
