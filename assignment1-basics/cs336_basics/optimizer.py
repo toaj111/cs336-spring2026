@@ -4,8 +4,6 @@ import torch
 import math
 import torch.nn as nn
 
-
-# TODO: 应用lr strategy
 class AdamW(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, weight_decay=0.01, betas=(0.9, 0.999), eps=1e-8):
         if lr < 0 or weight_decay < 0 or eps < 0 or betas[0] < 0 or betas[1] < 0:
@@ -22,13 +20,14 @@ class AdamW(torch.optim.Optimizer):
             beta1 = group["beta1"]
             beta2 = group["beta2"]
             for p in group["params"]:
+                device = p.device
                 if p.grad is None:
                     continue
                 grad = p.grad.data
                 state = self.state[p]
                 t = state.get("t", 1)
-                m = state.get("m", torch.zeros(p.shape))
-                v = state.get("v", torch.zeros(p.shape))
+                m = state.get("m", torch.zeros(p.shape, device=device))
+                v = state.get("v", torch.zeros(p.shape, device=device))
                 alpha_t = alpha * math.sqrt(1 - beta2 ** t) / (1 - beta1 ** t)
                 p.data -= alpha * lam * p.data
                 m = beta1 * m + (1 - beta1) * grad

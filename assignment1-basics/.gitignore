@@ -167,3 +167,6 @@ data/
 
 # profile files
 profile/
+
+# checkpoints
+checkpoints/

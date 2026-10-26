@@ -5,17 +5,20 @@ from cs336_basics.serialization import save_vocab, save_merges
 from cs336_basics.tokenizer import Tokenizer
 
 # 完成训练数据的生成
-input_path = "data/TinyStoriesV2-GPT4-valid.txt"
+training_data_path = "data/TinyStoriesV2-GPT4-train.txt"
+training_data_out = "TinyStoriesV2-GPT4-train.npy"
+# training_data_path = "data/test_train.txt"
+# training_data_out = "test_train.npy"
+valid_data_path = "data/TinyStoriesV2-GPT4-valid.txt"
+valid_data_out = "TinyStoriesV2-GPT4-valid.npy"
+# valid_data_path = "data/test_valid.txt"
+# valid_data_out = "test_valid.npy"
+vocab_path = "cs336_basics/scripts/tiny_story_vocab.json"
+merges_path = "cs336_basics/scripts/tiny_story_merges.json"
 special_tokens = ["<|endoftext|>"]
-vocab_size = 10000
 output_dir = "cs336_basics/data"
 
-if __name__ == "__main__":
-    vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
-    save_vocab(vocab, "cs336_basics/data/tiny_story_vocab.json")
-    save_merges(merges, "cs336_basics/data/tiny_story_merges.json")
-    tokenizer = Tokenizer(vocab, merges, special_tokens=special_tokens)
-
+def encode_file(tokenizer: Tokenizer, input_path: str, output_path: str):
     batch_size = 1000000
     batch = []
     batch_files = []
@@ -43,7 +46,7 @@ if __name__ == "__main__":
 
     total_tokens = sum(np.load(p, mmap_mode="r").size for p in batch_files)
 
-    final_path = output_dir / "tiny_story_tokens.npy"
+    final_path = output_dir / output_path
     merged = np.lib.format.open_memmap(
         final_path, 
         mode="w+",
@@ -63,9 +66,15 @@ if __name__ == "__main__":
     for path in batch_files:
         path.unlink()
 
-
+    print(f"文件: {input_path}")
     print(f"Token 数量: {total_tokens}")
     print(f"保存位置: {final_path}")
 
 
-    
+if __name__ == "__main__":
+    tokenizer = Tokenizer.from_files(vocab_path, merges_path, special_tokens)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    encode_file(tokenizer, training_data_path, training_data_out)
+    encode_file(tokenizer, valid_data_path, valid_data_out)
+

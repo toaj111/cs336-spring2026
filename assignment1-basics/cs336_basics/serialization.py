@@ -41,11 +41,4 @@ def load_merges(file_path: str) -> list[tuple[bytes, bytes]]:
 
     return merges
 
-
-# TODO: 完成tokenid的序列化和逆序列化
-def save_token_IDs(token_ids: list[int]):
-    pass
-
-def load_token_IDs(file_path: str) -> list[np.uint16]:
-    pass
     

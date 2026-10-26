@@ -9,7 +9,7 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
         return vocab, merges
 
     # pretoken_counts = serial_pretokenize(input_path, special_tokens)
-    pretoken_counts = parallel_pretokenize(input_path, special_tokens, 8)
+    pretoken_counts = parallel_pretokenize(input_path, special_tokens, 22)
     print("预分词完成")
 
     pair_counts = get_pair_counts(pretoken_counts)

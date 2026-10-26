@@ -9,6 +9,6 @@ vocab_size = 32000
 
 if __name__ == "__main__":
     vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
-    save_vocab(vocab, "cs336_basics/train/owt_vocab.json")
-    save_merges(merges, "cs336_basics/train/owt_merges.json")
+    save_vocab(vocab, "cs336_basics/scripts/owt_vocab.json")
+    save_merges(merges, "cs336_basics/scripts/owt_merges.json")
     
