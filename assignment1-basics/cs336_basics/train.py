@@ -10,6 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import numpy.typing as npt
 from cs336_basics.config import Config
+from cs336_basics.config import load_config
 
 
 
@@ -87,7 +88,8 @@ def train(config: Config):
         
 
 if __name__ == "__main__":
-    config = Config()
+    config_path = "cs336_basics/configs/baseline.yaml"
+    config = load_config(config_path)
     train(config)
 
 
