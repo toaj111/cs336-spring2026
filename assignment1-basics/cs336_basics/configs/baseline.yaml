@@ -1,3 +1,6 @@
+experiment_name: str = "baseline"
+experiments_dir: str = "cs336_basics/experiments"
+
 # Model hyperparameters
 vocab_size: 10000
 context_length: 256
@@ -35,9 +38,9 @@ weight_decay: 0.01
 beta1: 0.9
 beta2: 0.999
 eps: 1.0e-8
-lr_strategy: null
+lr_strategy: cosine_lr_schedule_with_warmup
 
 # Logging and checkpointing
-logging_interval: 200
-eval_interval: 1000
+logging_interval: 100
+eval_interval: 200
 save_interval: 1000

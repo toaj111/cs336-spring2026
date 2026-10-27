@@ -1,9 +1,15 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, asdict
 import torch
 import yaml
+import os
+import json
+from pathlib import Path
 
 @dataclass
 class Config:
+    experiment_name: str = "baseline"
+    experiments_dir: str = "cs336_basics/experiments"
+
     # hyperparameters for model
     vocab_size: int = 10000
     context_length: int = 256
@@ -71,3 +77,19 @@ def load_config(path: str) -> Config:
         raw["dtype"] = dtype_names[dtype_name]
 
     return Config(**raw)
+
+
+def write_config_to_json(
+    config: Config,
+    output_path: str | os.PathLike,
+):
+    data = asdict(config)
+    if data["device"] is not None:
+        data["device"] = str(data["device"])
+
+    if data["dtype"] is not None:
+        data["dtype"] = str(data["dtype"]).removeprefix("torch.")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+        f.write("\n")

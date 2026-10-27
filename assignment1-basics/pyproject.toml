@@ -20,6 +20,8 @@ dependencies = [
     "ty>=0.0.26",
     "ruff>=0.15.8",
     "pyyaml>=6.0.3",
+    "pandas>=3.1.0",
+    "matplotlib>=3.11.2",
 ]
 
 [build-system]
