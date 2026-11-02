@@ -1,5 +1,5 @@
-experiment_name: str = "baseline"
-experiments_dir: str = "cs336_basics/experiments"
+experiment_name: baseline
+experiments_dir: cs336_basics/experiments
 
 # Model hyperparameters
 vocab_size: 10000
