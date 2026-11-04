@@ -64,6 +64,7 @@ def benchmark(
     warmup_steps: int,
     measure_steps: int,
     use_amp: bool,
+    record_memory: bool,
 ):
     assert mode in {
         "forward",
@@ -155,6 +156,8 @@ def benchmark(
         "total": [],
     }
 
+    if record_memory:
+        torch.cuda.memory._record_memory_history(max_entries = 10000)
     with nvtx.range("measure"):
         for step in range(measure_steps):
             with torch.autocast("cuda", torch.bfloat16, enabled=use_amp):
@@ -162,6 +165,10 @@ def benchmark(
 
             for key, value in times.items():
                 measured_time[key].append(value)
+
+    if record_memory:
+        torch.cuda.memory._dump_snapshot("memeory_snapshot.pickle")
+        torch.cuda.memory._record_memory_history(enabled=None)
 
     # Print individual measurements
     for i in range(measure_steps):
@@ -181,7 +188,7 @@ def benchmark(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--vocab_size", type=int, default=10000)
-    parser.add_argument("--context_length", type=int, default=512)
+    parser.add_argument("--context_length", type=int, default=128)
     parser.add_argument("--d_model", type=int, default=768)
     parser.add_argument("--num_layers", type=int, default=12)
     parser.add_argument("--num_heads", type=int, default=12)
@@ -190,11 +197,12 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--mode", type=str, 
                         choices=["forward", "forward-backward", "forward-backward-optimizer"], 
-                        default="forward-backward-optimizer")
+                        default="forward-backward")
     parser.add_argument("--warmup_steps", type=int, default=2)
     parser.add_argument("--measure_steps", type=int, default=5)
     parser.add_argument("--use_amp", action="store_true", default=False)
+    parser.add_argument("--record_memory", action="store_true", default=False)
     args = parser.parse_args()
 
     model = BasicsTransformerLM(args.vocab_size, args.context_length, args.d_model, args.num_layers, args.num_heads, args.d_ff, args.rope_theta)
-    benchmark(model, args.batch_size, args.context_length, args.vocab_size, args.mode, args.warmup_steps, args.measure_steps, args.use_amp)
+    benchmark(model, args.batch_size, args.context_length, args.vocab_size, args.mode, args.warmup_steps, args.measure_steps, args.use_amp, args.record_memory)
