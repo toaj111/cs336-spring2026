@@ -188,7 +188,7 @@ def benchmark(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--vocab_size", type=int, default=10000)
-    parser.add_argument("--context_length", type=int, default=128)
+    parser.add_argument("--context_length", type=int, default=512)
     parser.add_argument("--d_model", type=int, default=768)
     parser.add_argument("--num_layers", type=int, default=12)
     parser.add_argument("--num_heads", type=int, default=12)
@@ -197,12 +197,14 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--mode", type=str, 
                         choices=["forward", "forward-backward", "forward-backward-optimizer"], 
-                        default="forward-backward")
-    parser.add_argument("--warmup_steps", type=int, default=2)
-    parser.add_argument("--measure_steps", type=int, default=5)
+                        default="forward-backward-optimizer")
+    parser.add_argument("--warmup_steps", type=int, default=5)
+    parser.add_argument("--measure_steps", type=int, default=10)
     parser.add_argument("--use_amp", action="store_true", default=False)
     parser.add_argument("--record_memory", action="store_true", default=False)
+    parser.add_argument("--compile", action="store_true", default=False)
     args = parser.parse_args()
-
     model = BasicsTransformerLM(args.vocab_size, args.context_length, args.d_model, args.num_layers, args.num_heads, args.d_ff, args.rope_theta)
+    if args.compile:
+        model = torch.compile(model)
     benchmark(model, args.batch_size, args.context_length, args.vocab_size, args.mode, args.warmup_steps, args.measure_steps, args.use_amp, args.record_memory)
