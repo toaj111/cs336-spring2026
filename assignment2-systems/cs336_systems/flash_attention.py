@@ -1,7 +1,7 @@
 import triton
 import triton.language as tl
 import torch
-from jaxtyping import Float, Int, Bool
+from jaxtyping import Float
 from torch import Tensor
 from einops import einsum
 import math
@@ -44,9 +44,30 @@ class FlashAttention(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, grad_out):
-        raise NotImplementedError
+    def backward(ctx, grad_out: Float[Tensor, "... N_q d"]):
+        L, Q, K, V, O = ctx.saved_tensors
+        dQ, dK, dV = torch_flash_attention_backward(Q, K, V, O, grad_out, L)
+        return dQ, dK, dV, None # backward的返回数量必须和forward对齐
 
+@torch.compile
+def torch_flash_attention_backward(
+        Q: Float[Tensor, "... N_q d"], 
+        K: Float[Tensor, "... N_k d"], 
+        V: Float[Tensor, "... N_k d"], 
+        O: Float[Tensor, "... N_q d"], 
+        dO: Float[Tensor, "... N_q d"], 
+        L: Float[Tensor, "... N_q"],
+    ):
+    scale = 1.0 / math.sqrt(Q.shape[-1])
+    D: Float[Tensor, "... N_q"] = torch.sum(O * dO, dim=-1)
+    S: Float[Tensor, "... N_q N_k"] = einsum(Q, K, "... N_q d, ... N_k d -> ... N_q N_k") * scale
+    P: Float[Tensor, "... N_q N_k"] = torch.exp(S - L.unsqueeze(-1))
+    dV: Float[Tensor, "... N_k d"] = einsum(P, dO, "... N_q N_k, ... N_q d -> ... N_k d")
+    dP: Float[Tensor, "... N_q N_k"] = einsum(dO, V, "... N_q d, ... N_k d -> ... N_q N_k")
+    dS: Float[Tensor, "... N_q N_k"] = P * (dP - D.unsqueeze(-1))
+    dQ: Float[Tensor, "... N_q d"] = einsum(dS, K, "... N_q N_k, ... N_k d -> ... N_q d") * scale
+    dK: Float[Tensor, "... N_k d"] = einsum(dS, Q, "... N_q N_k, ... N_q d -> ... N_k d") * scale
+    return dQ, dK, dV
 
 class FlashAttentionTriton(torch.autograd.Function):
     @staticmethod
