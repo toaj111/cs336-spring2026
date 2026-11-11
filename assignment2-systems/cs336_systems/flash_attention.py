@@ -59,6 +59,13 @@ def torch_flash_attention_backward(
         L: Float[Tensor, "... N_q"],
     ):
     scale = 1.0 / math.sqrt(Q.shape[-1])
+    in_type = Q.dtype
+    Q = Q.float()
+    K = K.float()
+    V = V.float()
+    O = O.float()
+    dO = dO.float()
+    L = L.float()
     D: Float[Tensor, "... N_q"] = torch.sum(O * dO, dim=-1)
     S: Float[Tensor, "... N_q N_k"] = einsum(Q, K, "... N_q d, ... N_k d -> ... N_q N_k") * scale
     P: Float[Tensor, "... N_q N_k"] = torch.exp(S - L.unsqueeze(-1))
@@ -67,7 +74,7 @@ def torch_flash_attention_backward(
     dS: Float[Tensor, "... N_q N_k"] = P * (dP - D.unsqueeze(-1))
     dQ: Float[Tensor, "... N_q d"] = einsum(dS, K, "... N_q N_k, ... N_k d -> ... N_q d") * scale
     dK: Float[Tensor, "... N_k d"] = einsum(dS, Q, "... N_q N_k, ... N_q d -> ... N_k d") * scale
-    return dQ, dK, dV
+    return dQ.to(in_type), dK.to(in_type), dV.to(in_type)
 
 class FlashAttentionTriton(torch.autograd.Function):
     @staticmethod
@@ -181,13 +188,19 @@ def flash_fwd_kernel(
     T_K = tl.cdiv(N_KEYS, K_TILE_SIZE)
     last_k_tile_size = N_KEYS % K_TILE_SIZE
     if is_causal:
-        causal_mask_q = tl.arange(query_tile_index * Q_TILE_SIZE, query_tile_index + 1)
+        causal_mask_q = (
+            query_tile_index * Q_TILE_SIZE
+            + tl.arange(0, Q_TILE_SIZE)
+        ) # tl.arange的参数需要时编译期常量
     for j in range(T_K):
         K_j = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
         V_j = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
         S_j = tl.dot(Q_i, tl.trans(K_j)) * scale
         if is_causal:
-            causal_mask_k = tl.arange(j * K_TILE_SIZE, (j + 1) * K_TILE_SIZE)
+            causal_mask_k = (
+                j * K_TILE_SIZE
+                + tl.arange(0, K_TILE_SIZE)
+            )
             causal_mask = causal_mask_q[:, None] >= causal_mask_k[None, :]
         if j == T_K - 1 and last_k_tile_size != 0:
             padding_mask = (tl.arange(0, K_TILE_SIZE) < last_k_tile_size)[None, :]
