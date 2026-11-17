@@ -32,7 +32,8 @@ def get_flashattention_autograd_function_triton() -> type:
     # For example: return MyTritonFlashAttentionAutogradFunctionClass
     return FlashAttentionTriton
 
-from cs336_systems.naive_ddp import NaiveDDP
+from cs336_systems.ddp import NaiveDDP
+from cs336_systems.ddp import OverlapDDP
 def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
     """
     Returns a torch.nn.Module container that handles
@@ -51,9 +52,11 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
         Instance of a DDP class.
     """
     # For example: return DDP(module)
-    return NaiveDDP(module)    
+    
+    # return NaiveDDP(module)
+    return OverlapDDP(module)
 
-
+from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
     """
     Code to run after the backward pass is completed, but before we take
@@ -67,10 +70,22 @@ def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Opt
     """
     # For example: ddp_model.finish_gradient_synchronization()
     
-    for param in ddp_model.parameters():
-        if param.grad is None:
-            continue
-        dist.all_reduce(param.grad, dist.ReduceOp.AVG, async_op=False)
+    # Naive DDP
+    # for param in ddp_model.parameters():
+    #     if param.grad is None:
+    #         continue
+    #     dist.all_reduce(param.grad, dist.ReduceOp.AVG, async_op=False)
+    
+    # grads = [param.grad for param in ddp_model.parameters() if param.grad is not None]
+    # flattend_grads = _flatten_dense_tensors(grads)
+    # dist.all_reduce(flattend_grads, dist.ReduceOp.AVG, async_op=False)
+    # unflattend_grads = _unflatten_dense_tensors(flattend_grads, grads)
+    # for old, new in zip(grads, unflattend_grads):
+    #     old.copy_(new)
+
+    # Overlap DDP
+    ddp_model.finish_gradient_synchronization()
+
 
 
 def get_fsdp(module: torch.nn.Module, compute_dtype: torch.dtype | None = None) -> torch.nn.Module:
