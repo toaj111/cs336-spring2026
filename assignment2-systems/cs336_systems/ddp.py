@@ -369,5 +369,308 @@ def gather_full_params(fsdp_model: FSDP) -> dict[str, torch.Tensor]:
 #                 handle.wait()
 #             layer_handles.clear()
 
+# FSDP claude的错误实现
 
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+# import torch.distributed as dist
+
+
+# class _ShardedParam:
+#     """一个被分片的参数：本地 FP32 分片 + 还原完整形状所需的信息。"""
+
+#     def __init__(self, shard: nn.Parameter, full_shape: torch.Size):
+#         self.shard = shard                  # 沿 dim0 切分后的本地分片（FP32 主权重）
+#         self.full_shape = full_shape        # 原始完整形状
+#         self.shard_dim0 = shard.shape[0]    # 每个 rank 持有的行数（含 padding）
+
+
+# class _Layer:
+#     """一个被 FSDP 管理的 Linear / Embedding。"""
+
+#     def __init__(self, idx: int, module: nn.Module):
+#         self.idx = idx
+#         self.module = module
+#         self.params: dict[str, _ShardedParam] = {}
+#         self.fwd_names: tuple = ()   # forward 需要 gather 的参数
+#         self.bwd_names: tuple = ()   # backward 需要 gather 的参数
+
+
+# class _FSDPLinearFn(torch.autograd.Function):
+#     @staticmethod
+#     def forward(ctx, x, weight_shard, bias_shard, fsdp, layer):
+#         names = ("weight",) if bias_shard is None else ("weight", "bias")
+#         full = fsdp._collect(layer, names)           # 等待/发起 all-gather
+#         out = F.linear(x, full["weight"], full.get("bias"))
+#         ctx.save_for_backward(x)                     # 只保存 x，不保存完整权重
+#         ctx.fsdp, ctx.layer, ctx.has_bias = fsdp, layer, bias_shard is not None
+#         del full                                     # 完整权重随函数返回被释放
+#         fsdp._prefetch(layer.idx + 2, forward=True)  # 本层算完 -> 开始 gather 第 i+2 层
+#         return out
+
+#     @staticmethod
+#     def backward(ctx, grad_out):
+#         fsdp, layer = ctx.fsdp, ctx.layer
+#         (x,) = ctx.saved_tensors
+#         grad_out = grad_out.to(x.dtype)
+#         fsdp._prefetch(layer.idx - 1, forward=False)       # 先发起上一层，与本层计算重叠
+
+#         grad_x = None
+#         if ctx.needs_input_grad[0]:
+#             w = fsdp._collect(layer, ("weight",))["weight"]  # backward 重新 all-gather
+#             grad_x = grad_out @ w
+#             del w                                            # 用完立刻释放
+
+#         go2d = grad_out.reshape(-1, grad_out.shape[-1])
+#         x2d = x.reshape(-1, x.shape[-1])
+#         fsdp._reduce_scatter(layer, "weight", go2d.t() @ x2d)
+#         if ctx.has_bias:
+#             fsdp._reduce_scatter(layer, "bias", go2d.sum(0))
+
+#         fsdp._prefetch(layer.idx - 2, forward=False)
+#         return grad_x, None, None, None, None
+
+
+# class _FSDPEmbeddingFn(torch.autograd.Function):
+#     @staticmethod
+#     def forward(ctx, ids, weight_shard, fsdp, layer):
+#         w = fsdp._collect(layer, ("weight",))["weight"]
+#         out = F.embedding(ids, w, padding_idx=layer.module.padding_idx)
+#         ctx.save_for_backward(ids)
+#         ctx.fsdp, ctx.layer = fsdp, layer
+#         del w
+#         fsdp._prefetch(layer.idx + 2, forward=True)
+#         return out
+
+#     @staticmethod
+#     def backward(ctx, grad_out):
+#         fsdp, layer = ctx.fsdp, ctx.layer
+#         (ids,) = ctx.saved_tensors
+#         fsdp._prefetch(layer.idx - 1, forward=False)
+
+#         info = layer.params["weight"]
+#         num, dim = info.full_shape
+#         flat_ids = ids.reshape(-1)
+#         g = grad_out.reshape(-1, dim)
+#         pad_idx = layer.module.padding_idx
+#         if pad_idx is not None:
+#             keep = flat_ids != pad_idx
+#             flat_ids, g = flat_ids[keep], g[keep]
+#         # embedding 的反向不需要完整权重，只需要 ids；用 fp32 累加避免重复 id 的精度损失
+#         grad_w = torch.zeros(num, dim, dtype=torch.float32, device=grad_out.device)
+#         grad_w.index_add_(0, flat_ids, g.float())
+#         fsdp._reduce_scatter(layer, "weight", grad_w.to(grad_out.dtype))
+
+#         fsdp._prefetch(layer.idx - 2, forward=False)
+#         return None, None, None, None
+
+
+# class FSDP(nn.Module):
+#     def __init__(self, module: torch.nn.Module, compute_dtype: torch.dtype | None = None):
+#         super().__init__()
+#         self.module = module
+#         self.compute_dtype = compute_dtype
+#         self.rank = dist.get_rank()
+#         self.world_size = dist.get_world_size()
+
+#         self.layers: list[_Layer] = []
+#         # layer_idx -> {param_name: (handle, gathered_buf, 通信用的输入分片)}
+#         self._pending_gather: dict[int, dict] = {}
+#         # [(handle, 分片梯度输出 buf, 对应的分片参数)]
+#         self._pending_rs: list = []
+#         # 未分片（replicated）参数的 all-reduce handle
+#         self._pending_ar: list = []
+
+#         self._sync_module_states()
+#         self._shard_and_wrap()
+#         self._register_replicated_grad_hooks()
+
+#     # ------------------------------------------------------------------ 初始化
+#     @torch.no_grad()
+#     def _sync_module_states(self):
+#         """保证各 rank 初始参数一致（以 rank0 为准）。"""
+#         for t in list(self.module.parameters()) + list(self.module.buffers()):
+#             dist.broadcast(t.data, src=0)
+
+#     def _shard_param(self, p: nn.Parameter) -> _ShardedParam:
+#         """沿 dim0 分片；dim0 不能整除时在末尾补 0 行。"""
+#         ws, rank = self.world_size, self.rank
+#         dim0 = p.shape[0]
+#         k = -(-dim0 // ws)                       # ceil
+#         data = p.data
+#         if k * ws != dim0:
+#             data = F.pad(data, [0, 0] * (data.ndim - 1) + [0, k * ws - dim0])
+#         shard = data[rank * k:(rank + 1) * k].clone()   # clone：释放完整权重的显存
+#         return _ShardedParam(nn.Parameter(shard, requires_grad=p.requires_grad), p.shape)
+
+#     def _shard_and_wrap(self):
+#         sharded: dict[int, _ShardedParam] = {}   # id(原参数) -> info，支持 tied weights
+#         for m in self.module.modules():
+#             if not isinstance(m, (nn.Linear, nn.Embedding)):
+#                 continue
+#             if isinstance(m, nn.Embedding):
+#                 assert m.max_norm is None and not m.scale_grad_by_freq and not m.sparse, \
+#                     "FSDP: Embedding 暂不支持 max_norm / scale_grad_by_freq / sparse"
+#             layer = _Layer(len(self.layers), m)
+#             for name, p in list(m.named_parameters(recurse=False)):
+#                 if id(p) not in sharded:
+#                     sharded[id(p)] = self._shard_param(p)
+#                 info = sharded[id(p)]
+#                 setattr(m, name, info.shard)     # 模块里换成分片（真正的 nn.Parameter）
+#                 layer.params[name] = info
+#             layer.fwd_names = tuple(layer.params.keys())
+#             # Linear backward 只需要 weight；Embedding backward 不需要完整权重
+#             layer.bwd_names = ("weight",) if isinstance(m, nn.Linear) else ()
+#             self._wrap_forward(layer)
+#             self.layers.append(layer)
+
+#     def _wrap_forward(self, layer: _Layer):
+#         m = layer.module
+#         if isinstance(m, nn.Linear):
+#             def fwd(x):
+#                 if (self.compute_dtype is not None and x.is_floating_point()
+#                         and x.dtype != self.compute_dtype):
+#                     x = x.to(self.compute_dtype)
+#                 return _FSDPLinearFn.apply(x, m.weight, m.bias, self, layer)
+#         else:
+#             def fwd(ids):
+#                 return _FSDPEmbeddingFn.apply(ids, m.weight, self, layer)
+#         m.forward = fwd
+
+#     def _register_replicated_grad_hooks(self):
+#         """没有被分片的参数（norm 等）：梯度做异步 all-reduce(AVG)。"""
+#         sharded_ids = {id(info.shard) for l in self.layers for info in l.params.values()}
+#         for p in self.module.parameters():
+#             if id(p) in sharded_ids or not p.requires_grad:
+#                 continue
+#             p.register_post_accumulate_grad_hook(self._all_reduce_hook)
+
+#     def _all_reduce_hook(self, p: torch.Tensor):
+#         h = dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, async_op=True)
+#         self._pending_ar.append(h)
+
+#     # ------------------------------------------------------------------ 通信
+#     def _launch_gather(self, layer: _Layer, names):
+#         """异步 all-gather：先 cast 成 compute_dtype，再通信。"""
+#         pend = self._pending_gather.setdefault(layer.idx, {})
+#         for n in names:
+#             if n in pend:
+#                 continue
+#             info = layer.params[n]
+#             src = info.shard.detach()
+#             if self.compute_dtype is not None and src.dtype != self.compute_dtype:
+#                 src = src.to(self.compute_dtype)
+#             src = src.contiguous()
+#             out = torch.empty((self.world_size * info.shard_dim0, *info.full_shape[1:]),
+#                               dtype=src.dtype, device=src.device)
+#             handle = dist.all_gather_into_tensor(out, src, async_op=True)
+#             pend[n] = (handle, out, src)
+#         if not pend:
+#             del self._pending_gather[layer.idx]
+
+#     def _collect(self, layer: _Layer, names) -> dict:
+#         """拿到完整权重：没预取就现场发起，然后等待完成。返回去掉 padding 的视图。"""
+#         self._launch_gather(layer, names)
+#         pend = self._pending_gather.get(layer.idx, {})
+#         full = {}
+#         for n in names:
+#             handle, out, _ = pend.pop(n)
+#             handle.wait()
+#             full[n] = out[:layer.params[n].full_shape[0]]
+#         if layer.idx in self._pending_gather and not self._pending_gather[layer.idx]:
+#             del self._pending_gather[layer.idx]
+#         return full
+
+#     def _prefetch(self, idx: int, forward: bool):
+#         if 0 <= idx < len(self.layers):
+#             layer = self.layers[idx]
+#             self._launch_gather(layer, layer.fwd_names if forward else layer.bwd_names)
+
+#     def _reduce_scatter(self, layer: _Layer, name: str, grad_full: torch.Tensor):
+#         """异步 reduce-scatter(AVG)，结果在 finish_gradient_synchronization 里写入 shard.grad。"""
+#         info = layer.params[name]
+#         if not info.shard.requires_grad:
+#             return
+#         pad = self.world_size * info.shard_dim0 - grad_full.shape[0]
+#         if pad:
+#             grad_full = F.pad(grad_full, [0, 0] * (grad_full.ndim - 1) + [0, pad])
+#         grad_full = grad_full.contiguous()
+#         out = torch.empty((info.shard_dim0, *grad_full.shape[1:]),
+#                           dtype=grad_full.dtype, device=grad_full.device)
+#         handle = dist.reduce_scatter_tensor(out, grad_full, op=dist.ReduceOp.AVG, async_op=True)
+#         # c10d 的 Work 对象/allocator 的 recordStream 会保证 grad_full 在通信完成前不被复用
+#         self._pending_rs.append((handle, out, info.shard))
+
+#     def _drain_gathers(self):
+#         for pend in self._pending_gather.values():
+#             for handle, _, _ in pend.values():
+#                 handle.wait()
+#         self._pending_gather.clear()
+
+#     # ------------------------------------------------------------------ 对外接口
+#     def forward(self, *inputs, **kwargs):
+#         self._drain_gathers()                 # 清理上一轮遗留的预取
+#         for layer in self.layers[:2]:         # 先 gather 第 0、1 层；之后每层算完再 gather 第 i+2 层
+#             self._launch_gather(layer, layer.fwd_names)
+#         return self.module(*inputs, **kwargs)
+
+#     @torch.no_grad()
+#     def finish_gradient_synchronization(self):
+#         self._drain_gathers()
+#         for handle, out, shard in self._pending_rs:
+#             handle.wait()
+#             g = out if out.dtype == shard.dtype else out.to(shard.dtype)  # 梯度转回 FP32
+#             if shard.grad is None:
+#                 shard.grad = g
+#             else:
+#                 shard.grad += g               # 支持梯度累积 / tied weights
+#         self._pending_rs.clear()
+#         for h in self._pending_ar:
+#             h.wait()
+#         self._pending_ar.clear()
+
+
+# @torch.no_grad()
+# def fsdp_gather_full_params(fsdp_model: torch.nn.Module) -> dict[str, torch.Tensor]:
+#     """
+#     All-gather sharded parameters from the FSDP model to reconstruct full
+#     parameter tensors. Replicated parameters are returned as-is.
+#     """
+#     # 不是 FSDP 包装的模型：所有参数本来就是完整的
+#     if not isinstance(fsdp_model, FSDP):
+#         return {n: p.detach().clone() for n, p in fsdp_model.named_parameters()}
+
+#     # 先等待所有未完成的通信，避免和预取 / reduce-scatter 交错
+#     fsdp_model._drain_gathers()
+
+#     # id(本地分片参数) -> 分片信息，用于识别哪些参数是被分片的
+#     shard_info = {
+#         id(info.shard): info
+#         for layer in fsdp_model.layers
+#         for info in layer.params.values()
+#     }
+
+#     full_cache: dict[int, torch.Tensor] = {}   # tied weights 只 gather 一次
+#     result: dict[str, torch.Tensor] = {}
+
+#     # remove_duplicate=False：共享权重的每个名字都出现在结果里
+#     # 迭代顺序在所有 rank 上一致，保证 collective 调用顺序相同
+#     for name, p in fsdp_model.module.named_parameters(remove_duplicate=False):
+#         info = shard_info.get(id(p))
+#         if info is None:
+#             # 未分片（replicated）参数，原样返回
+#             result[name] = p.detach().clone()
+#             continue
+
+#         key = id(p)
+#         if key not in full_cache:
+#             src = p.detach().contiguous()   # 本地 FP32 主权重，不经过 compute_dtype，精度无损
+#             out = torch.empty((fsdp_model.world_size * info.shard_dim0, *info.full_shape[1:]),
+#                               dtype=src.dtype, device=src.device)
+#             dist.all_gather_into_tensor(out, src)             # 同步 all-gather
+#             full_cache[key] = out[:info.full_shape[0]].clone()  # 去掉 padding，并释放大 buffer
+#         result[name] = full_cache[key]
+
+#     return result
 
